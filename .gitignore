@@ -1,0 +1,12 @@
+ThirdParty/build
+ThirdParty/install
+ThirdParty/brotli
+ThirdParty/bzip2
+ThirdParty/freetype
+ThirdParty/glew-cmake
+ThirdParty/glfw
+ThirdParty/libpng
+ThirdParty/zlib
+build
+Install
+.vscode

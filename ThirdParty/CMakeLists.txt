@@ -1,0 +1,5 @@
+﻿include("zlib.cmake")
+include("libpng.cmake")
+include("bzip2.cmake")
+include("brotli.cmake")
+include("freetype.cmake")

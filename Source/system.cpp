@@ -5,6 +5,12 @@
 #include <fstream>
 #include <iterator>
 
+#include <Windows.h>
+#include <usp10.h>
+#include <AtlBase.h>
+#include <AtlCom.h>
+#include <mlang.h>
+
 #include "system.h"
 #include "freetype.h"
 
@@ -110,6 +116,14 @@ std::string WideStringToMultiString(const std::wstring& wstr) {
     return std::string(szBuffer);
 }
 
+std::wstring MultiStringToWideString(const std::string& wstr) {
+    UINT nLen = MultiByteToWideChar(CP_ACP, NULL, wstr.data(), -1, NULL, NULL);
+    WCHAR* szBuffer = new WCHAR[nLen + 1];
+    nLen = MultiByteToWideChar(CP_ACP, NULL, wstr.data(), -1, szBuffer, nLen);
+    szBuffer[nLen] = 0;
+    return std::wstring(szBuffer);
+}
+
 static LinkedList<SystemFontInfo> GlobalSystemFontsInfo;
 
 bool initialized = false;
@@ -163,18 +177,20 @@ LinkedList<SystemFontInfo>& GetSystemFonts(bool refresh) {
     return GlobalSystemFontsInfo;
 }
 
-static void BlitGray8Bitmap(uint8_t* dstBitmap, size_t dstRowPitch, const uint8_t* srcBitmap, size_t srcRowPitch, uint32_t width, uint32_t height) {
-    uint8_t* dst = dstBitmap;
+static void BlitGray8Bitmap(unsigned char* dstBitmap, size_t dstRowPitch, const uint8_t* srcBitmap, size_t srcRowPitch, uint32_t width, uint32_t height) {
+    unsigned char* dst = dstBitmap;
     const uint8_t* src = srcBitmap;
     for (uint32_t iy = 0; iy < height; ++iy) {
         for (uint32_t ix = 0; ix < width; ++ix) {
             const uint8_t val = src[ix];
             // Input range is 0..64, output is 0..255.
-            dst[3 * ix] = val >= 64 ? 255 : val * 4;
-            dst[3 * ix + 1] = dst[3 * ix + 2] = dst[3 * ix];
-            dst[3 * ix + 3] = dst[3 * ix];
+            auto value = val >= 64 ? 255 : val * 4;
+            auto pixel_offest = iy * width * 4 + ix * 4;
+            dst[pixel_offest] = value;
+            dst[pixel_offest + 1] = value;
+            dst[pixel_offest + 2] = value;
+            dst[pixel_offest + 3] = value;
         }
-        dst += dstRowPitch * 4;
         src += srcRowPitch;
     }
 }
@@ -185,7 +201,48 @@ template <typename T>
 constexpr inline T AlignUp(T val, T align) {
     return (val + align - 1) / align * align;
 }
-std::wstring GetSystemFontName(FTTFontInfo* font, uint32_t char_code, std::vector<wchar_t>& glyphIndices) {
+
+std::vector<wchar_t> GetFontGlpyhIndicies(HDC hdc, HFONT font, uint32_t char_code, LOGFONTW* logFont) {
+    std::vector<wchar_t> glyphIndices;
+    std::wstring unicodeString = UnicodeToWideString(char_code);
+    HGDIOBJ oldfont = ::SelectObject(hdc, font);
+    ::GetObjectW(font, sizeof(LOGFONTW), logFont);
+    SCRIPT_CACHE sc = NULL;
+    SCRIPT_FONTPROPERTIES fp = {sizeof(fp)};
+    ::ScriptGetFontProperties(hdc, &sc, &fp);
+    ::ScriptFreeCache(&sc);
+    int nchSzStr = static_cast<int>(wcslen(unicodeString.data()));
+    GCP_RESULTSW gcpResults = {sizeof(GCP_RESULTSW)};
+    gcpResults.nGlyphs = nchSzStr;
+    wchar_t* wstrGlyphMemory = static_cast<wchar_t*>(calloc(wcslen(unicodeString.data()) + 1, sizeof(wchar_t)));
+    gcpResults.lpGlyphs = wstrGlyphMemory;
+    ::GetCharacterPlacementW(hdc, unicodeString.data(), nchSzStr, 0, &gcpResults, GCP_GLYPHSHAPE);
+    bool hasValidGlyph = true;
+    for (UINT i = 0; i < gcpResults.nGlyphs; i++) {
+        wchar_t n = gcpResults.lpGlyphs[i];
+        glyphIndices.push_back(n);
+        if (char_code == 32) {
+            if (n == fp.wgInvalid || n == fp.wgDefault) {
+                hasValidGlyph = false;
+                break;
+            }
+        } else {
+            if (n == fp.wgBlank || n == fp.wgInvalid || n == fp.wgDefault) {
+                hasValidGlyph = false;
+                break;
+            }
+        }
+    }
+    free(wstrGlyphMemory);
+    ::SelectObject(hdc, oldfont);
+    if (!hasValidGlyph) {
+        glyphIndices.clear();
+    }
+    return glyphIndices;
+}
+
+std::wstring GetSystemFontName(FontInfo* font, uint32_t char_code, std::vector<wchar_t>& glyphIndices, bool enbaleRemap, bool enableFallback) {
+    glyphIndices.clear();
     bool bComInitted = SUCCEEDED(::CoInitialize(NULL));
     std::wstring result = L"";
     if (true)  // Need this so that CoUninitialize() is called after destructors below
@@ -199,32 +256,57 @@ std::wstring GetSystemFontName(FTTFontInfo* font, uint32_t char_code, std::vecto
 
         std::wstring unicodeString = UnicodeToWideString(char_code);
         const wchar_t* single_codepoint = unicodeString.data();
-        std::shared_ptr<LOGFONTW> remapped = nullptr, fallback = nullptr, finalFont = nullptr;
+        std::shared_ptr<LOGFONTW> finalFont = nullptr;
         size_t szchLn = wcslen(single_codepoint);
         BOOL bSurrogatePair = szchLn >= 1 && IS_SURROGATE_PAIR(single_codepoint[0], single_codepoint[1]);
-        HDC hdc = ::CreateCompatibleDC(NULL);
-        HFONT mainFont = ::CreateFontA(font->size, 0, 0, 0, font->bold ? FW_BOLD : 0, font->italic, 0, 0, 0, 0, 0, 0, 0, font->name.c_str());
+        std::wstring mainFontName = MultiStringToWideString(font->name.data());
+
+        std::shared_ptr<LOGFONTW> mainLogFont = std::make_shared<LOGFONTW>();
         HFONT reMappedFont = NULL;
-        if (!bSurrogatePair) {
-            remapped = std::make_shared<LOGFONTW>();
+        std::shared_ptr<LOGFONTW> remappedLogFont = std::make_shared<LOGFONTW>();
+        std::vector<wchar_t> mainFontGlpyhIndicies;
+
+        HDC hdc = ::CreateCompatibleDC(NULL);
+        if (!hdc) {
+            goto RELEASE_DC_AND_FONT;
+        }
+        HFONT mainFont = ::CreateFontW(font->size, 0, 0, 0, font->bold ? FW_BOLD : 0, font->italic, 0, 0, 0, 0, 0, 0, 0, mainFontName.data());
+        if (!mainFont) {
+            goto RELEASE_DC_AND_FONT;
+        }
+        mainFontGlpyhIndicies = GetFontGlpyhIndicies(hdc, mainFont, char_code, mainLogFont.get());
+        if (mainFontGlpyhIndicies.size() > 0) {
+            glyphIndices = mainFontGlpyhIndicies;
+            result = wcslen(mainLogFont->lfFaceName) ? mainLogFont->lfFaceName : mainFontName;
+            goto RELEASE_DC_AND_FONT;
+        }
+
+        if (!bSurrogatePair && enbaleRemap) {
             DWORD codepages = 0;
             if (icodepages->GetCharCodePages(single_codepoint[0], &codepages) >= 0) {
                 if (ifont->MapFont(hdc, codepages, mainFont, &reMappedFont) >= 0) {
                     HGDIOBJ hOldFont = SelectObject(hdc, mainFont);
                     ::SelectObject(hdc, reMappedFont);
-                    ::GetObjectW(reMappedFont, sizeof(LOGFONTW), remapped.get());
+                    ::GetObjectW(reMappedFont, sizeof(LOGFONTW), remappedLogFont.get());
                     ::SelectObject(hdc, hOldFont);
                 }
             }
         } else {
-            remapped = nullptr;
+            remappedLogFont = nullptr;
         }
-        fallback = std::make_shared<LOGFONTW>();
-        bool hasFallbackValidGlyph = false;
-        if (!wcsstr(single_codepoint, L" ")) {
+        if (reMappedFont) {
+            std::shared_ptr<LOGFONTW> remappedLogFont2 = std::make_shared<LOGFONTW>();
+            auto remappedFontGlpyhIndicies = GetFontGlpyhIndicies(hdc, reMappedFont, char_code, remappedLogFont2.get());
+            if (remappedFontGlpyhIndicies.size() > 0) {
+                glyphIndices = remappedFontGlpyhIndicies;
+                result = wcslen(remappedLogFont2->lfFaceName) ? remappedLogFont2->lfFaceName : remappedLogFont->lfFaceName;
+                goto RELEASE_DC_AND_FONT;
+            }
+        }
+
+        if (enableFallback && !wcsstr(single_codepoint, L" ")) {
             HFONT testFont = reMappedFont ? reMappedFont : mainFont;
             HFONT fallbackFont = NULL;
-
             HDC metafileHDC = ::CreateEnhMetaFileW(NULL, NULL, NULL, NULL);
             HGDIOBJ metafileOldfont = ::SelectObject(metafileHDC, testFont);
             SCRIPT_STRING_ANALYSIS ssa;
@@ -233,52 +315,39 @@ std::wstring GetSystemFontName(FTTFontInfo* font, uint32_t char_code, std::vecto
             ::ScriptStringFree(&ssa);
             ::SelectObject(metafileHDC, metafileOldfont);
             HENHMETAFILE hmetafile = ::CloseEnhMetaFile(metafileHDC);
-            ::EnumEnhMetaFile(0, hmetafile, MetaFileProc, fallback.get(), NULL);
-            fallbackFont = CreateFontIndirectW(fallback.get());
+            std::shared_ptr<LOGFONTW> fallbackLogFont = std::make_shared<LOGFONTW>();
+            ::EnumEnhMetaFile(0, hmetafile, MetaFileProc, fallbackLogFont.get(), NULL);
+            if (wcslen(fallbackLogFont->lfFaceName)) {
+                fallbackFont = CreateFontIndirectW(fallbackLogFont.get());
+            }
             ::DeleteEnhMetaFile(hmetafile);
-
-            HGDIOBJ oldfont = ::SelectObject(hdc, fallbackFont);
-            SCRIPT_CACHE sc = NULL;
-            SCRIPT_FONTPROPERTIES fp = {sizeof(fp)};
-            ::ScriptGetFontProperties(hdc, &sc, &fp);
-            ::ScriptFreeCache(&sc);
-            int nchSzStr = static_cast<int>(wcslen(single_codepoint));
-            GCP_RESULTSW gcpResults = {sizeof(GCP_RESULTSW)};
-            gcpResults.nGlyphs = nchSzStr;
-            wchar_t* wstrGlyphMemory = static_cast<wchar_t*>(calloc(wcslen(single_codepoint) + 1, sizeof(wchar_t)));
-            gcpResults.lpGlyphs = wstrGlyphMemory;
-            ::GetCharacterPlacementW(hdc, single_codepoint, nchSzStr, 0, &gcpResults, GCP_GLYPHSHAPE);
-            bool hasValidGlyph = true;
-            for (UINT i = 0; i < gcpResults.nGlyphs; i++) {
-                wchar_t n = gcpResults.lpGlyphs[i];
-                glyphIndices.push_back(n);
-                if (n == fp.wgBlank || n == fp.wgInvalid || n == fp.wgDefault) {
-                    hasValidGlyph = false;
-                    break;
+            if (fallbackFont) {
+                std::shared_ptr<LOGFONTW> fallbackLogFont2 = std::make_shared<LOGFONTW>();
+                auto remappedFontGlpyhIndicies = GetFontGlpyhIndicies(hdc, fallbackFont, char_code, fallbackLogFont2.get());
+                ::DeleteObject(fallbackFont);
+                if (remappedFontGlpyhIndicies.size() > 0) {
+                    glyphIndices = remappedFontGlpyhIndicies;
+                    result = wcslen(fallbackLogFont2->lfFaceName) ? fallbackLogFont2->lfFaceName : fallbackLogFont->lfFaceName;
+                    goto RELEASE_DC_AND_FONT;
                 }
             }
-            free(wstrGlyphMemory);
-
-            ::SelectObject(hdc, oldfont);
-            ::DeleteObject(fallbackFont);
-            hasFallbackValidGlyph = hasValidGlyph;
         }
-        if (!hasFallbackValidGlyph) {
-            fallback = nullptr;
-            glyphIndices.clear();
+    RELEASE_DC_AND_FONT:
+        if (mainFont) {
+            ::DeleteObject(mainFont);
         }
-        ::DeleteObject(mainFont);
-        ::DeleteDC(hdc);
+        if (hdc) {
+            ::DeleteDC(hdc);
+        }
         if (reMappedFont) {
             ifont->ReleaseFont(reMappedFont);
         }
-        result = remapped ? remapped->lfFaceName : (fallback ? fallback->lfFaceName : L"");
     }
     if (bComInitted) ::CoUninitialize();
     return result;
 }
 
-GlyphBitmapInfo SystemFont(FTTFontInfo* ttffont, const std::wstring& fontName, uint32_t char_code, bool useGlyphIndex) {
+std::shared_ptr<GlyphBitmapInfo> SystemFont(FontInfo* ttffont, const std::wstring& fontName, uint32_t glyphIndex) {
     BITMAPINFO dummyBitmapInfo = {{
         sizeof(BITMAPINFOHEADER),  // biSize
         32, -32,                   // biWidth, biHeight
@@ -291,9 +360,9 @@ GlyphBitmapInfo SystemFont(FTTFontInfo* ttffont, const std::wstring& fontName, u
     }};
     unsigned char* dummyBitmapData = nullptr;
     HBITMAP dummyBitmap = ::CreateDIBSection(NULL, &dummyBitmapInfo, DIB_RGB_COLORS, (void**)&dummyBitmapData, NULL, 0);
-    if (dummyBitmap == NULL) return GetDefaultGlyph();
+    if (dummyBitmap == NULL) return nullptr;
     HDC dc = ::CreateCompatibleDC(NULL);
-    if (dc == NULL) return GetDefaultGlyph();
+    if (dc == NULL) return nullptr;
     HGDIOBJ oldBitmap = ::SelectObject(dc, dummyBitmap);
     HGDIOBJ oldFont = NULL;
     HFONT font = ::CreateFontW(ttffont->size,                        // cHeight
@@ -310,57 +379,67 @@ GlyphBitmapInfo SystemFont(FTTFontInfo* ttffont, const std::wstring& fontName, u
                                ANTIALIASED_QUALITY,                  // iQuality
                                DEFAULT_PITCH | FF_DONTCARE,          // iPitchAndFamily
                                fontName.data());
-    if (font == NULL) return GetDefaultGlyph();
+    if (font == NULL) {
+        ::SelectObject(dc, oldBitmap);
+        ::DeleteDC(dc);
+        ::DeleteObject(dummyBitmap);
+        return nullptr;
+    }
     oldFont = ::SelectObject(dc, font);
 
-    LONG ascent = 0, descent = 0;
-    {
-        UINT size = ::GetOutlineTextMetricsW(dc, 0, NULL);
-        assert(size >= sizeof(OUTLINETEXTMETRICW));
-        std::vector<char> buf(size);
-        ::GetOutlineTextMetricsW(dc, size, (LPOUTLINETEXTMETRICW)buf.data());
-        const OUTLINETEXTMETRICW* outlineTextMetric = (const OUTLINETEXTMETRICW*)buf.data();
-        ascent = outlineTextMetric->otmTextMetrics.tmAscent;
-        descent = outlineTextMetric->otmTextMetrics.tmDescent;
-    }
-
     const MAT2 mat2 = {{0, 1}, {0, 0}, {0, 0}, {0, 1}};
-    GlyphBitmapInfo charInfo;
+    std::shared_ptr<GlyphBitmapInfo> result = std::make_shared<GlyphBitmapInfo>();
     std::vector<uint8_t> glyphData;
 
     bool success = true;
     GLYPHMETRICS metrics = {};
-    DWORD res = ::GetGlyphOutlineW(dc, char_code, (useGlyphIndex ? GGO_GLYPH_INDEX : 0) | GGO_METRICS, &metrics, 0, NULL, &mat2);
-    if (res != GDI_ERROR) {
-        charInfo.advance = metrics.gmCellIncX;
-        charInfo.bearing_x = metrics.gmptGlyphOrigin.x;
-        charInfo.bearing_y = ascent - metrics.gmptGlyphOrigin.y;
-        charInfo.width = metrics.gmBlackBoxX;
-        charInfo.height = metrics.gmBlackBoxY;
 
-        if (metrics.gmBlackBoxX && metrics.gmBlackBoxY) {
-            DWORD currGlyphDataSize = ::GetGlyphOutlineW(dc, (UINT)char_code, (useGlyphIndex ? GGO_GLYPH_INDEX : 0) | GGO_GRAY8_BITMAP, &metrics, 0, NULL, &mat2);
-            if (currGlyphDataSize > 0 && currGlyphDataSize != GDI_ERROR) {
-                glyphData.resize(currGlyphDataSize);
-                uint8_t* currGlyphData = glyphData.data();
-                res = ::GetGlyphOutlineW(dc, (UINT)char_code, (useGlyphIndex ? GGO_GLYPH_INDEX : 0) | GGO_GRAY8_BITMAP, &metrics, currGlyphDataSize, currGlyphData, &mat2);
-                if (res == 0 || res == GDI_ERROR) {
+    DWORD currGlyphDataSize = ::GetGlyphOutlineW(dc, (UINT)glyphIndex, GGO_GLYPH_INDEX | GGO_GRAY8_BITMAP, &metrics, 0, NULL, &mat2);
+    if (currGlyphDataSize != GDI_ERROR) {
+        if (currGlyphDataSize) {
+            glyphData.resize(currGlyphDataSize);
+            uint8_t* currGlyphData = glyphData.data();
+            DWORD res = ::GetGlyphOutlineW(dc, (UINT)glyphIndex, GGO_GLYPH_INDEX | GGO_GRAY8_BITMAP, &metrics, currGlyphDataSize, currGlyphData, &mat2);
+            if (res == 0 || res == GDI_ERROR) {
+                success = false;
+            } else {
+                if (metrics.gmBlackBoxX && metrics.gmBlackBoxY) {
+                    result->error_code = GlyphErrorCode::Success;
+                    result->width = metrics.gmBlackBoxX;
+                    result->height = metrics.gmBlackBoxY;
+                    result->bearing_x = metrics.gmptGlyphOrigin.x;
+                    result->bearing_y = metrics.gmptGlyphOrigin.y;
+                    result->advance = metrics.gmCellIncX;
+                    result->emoji = false;
+                } else {
                     success = false;
                 }
             }
+        } else {
+            result->error_code = GlyphErrorCode::NoBitmapData;
+            result->width = 0;
+            result->height = 0;
+            result->bearing_x = 0;
+            result->bearing_y = 0;
+            result->advance = metrics.gmCellIncX;
+            result->emoji = false;
         }
     }
+
     if (success) {
-        std::vector<uint8_t> textureData;
-        textureData.resize(charInfo.width * charInfo.height * 4);
-        if (glyphData.size() && charInfo.width && charInfo.height) {
-            const uint32_t glyphDataRowPitch = AlignUp<uint32_t>(charInfo.width, 4);
-            BlitGray8Bitmap(textureData.data(), charInfo.width, glyphData.data(), glyphDataRowPitch, charInfo.width, charInfo.height);
+        if (glyphData.size() && result->width && result->height) {
+            const uint32_t glyphDataRowPitch = AlignUp<uint32_t>(result->width, sizeof(DWORD));
+            result->height = static_cast<uint32_t>(glyphData.size()) / glyphDataRowPitch;
+            unsigned char* textureData = static_cast<unsigned char*>(malloc(result->width * result->height * 4 * sizeof(char)));
+            BlitGray8Bitmap(textureData, result->width, glyphData.data(), glyphDataRowPitch, result->width, result->height);
+            result->data = textureData;
+            result->error_code = GlyphErrorCode::Success;
+        } else {
+            result->data = 0;
+            result->error_code = GlyphErrorCode::NoBitmapData;
         }
-        charInfo.data = malloc(charInfo.width * charInfo.height * 4);
-        memcpy(charInfo.data, textureData.data(), charInfo.width * charInfo.height * 4);
     } else {
-        charInfo = GetDefaultGlyph();
+        result = nullptr;
     }
 
     SelectObject(dc, oldFont);
@@ -368,20 +447,23 @@ GlyphBitmapInfo SystemFont(FTTFontInfo* ttffont, const std::wstring& fontName, u
     SelectObject(dc, oldBitmap);
     DeleteDC(dc);
     DeleteObject(dummyBitmap);
-    return charInfo;
+    return result;
 }
 
-std::vector<GlyphBitmapInfo> GetGlyphBitmapSystem(FTTFontInfo* font, uint32_t char_code) {
+std::vector<GlyphBitmapInfo> GetGlyphBitmapSystem(FontInfo* font, uint32_t char_code, bool enbaleRemap, bool enableFallback) {
     std::vector<wchar_t> glyphIndices;
-    std::wstring fontName = GetSystemFontName(font, char_code, glyphIndices);
-    if (glyphIndices.size()) {
-        std::vector<GlyphBitmapInfo> result;
-        for (auto glyphIndex : glyphIndices) {
-            result.push_back(SystemFont(font, fontName, glyphIndex, true));
+    std::wstring fontName = GetSystemFontName(font, char_code, glyphIndices, enbaleRemap, enableFallback);
+    std::vector<GlyphBitmapInfo> result;
+    if (fontName != L"") {
+        if (glyphIndices.size()) {
+            for (auto glyphIndex : glyphIndices) {
+                auto glyph = SystemFont(font, fontName, glyphIndex);
+                if (glyph) {
+                    result.push_back(*glyph);
+                }
+            }
         }
-        return result;
-    } else {
-        return {SystemFont(font, fontName, char_code, false)};
     }
+    return result;
 }
 }  // namespace Font

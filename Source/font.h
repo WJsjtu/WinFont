@@ -13,15 +13,11 @@
 #include <cstdint>
 #include <stdint.h>
 #include <cstddef>
-#include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <stdexcept>
 
 namespace Font {
 template <typename T>
-class FONT_PORT LinkedList {
+class LinkedList {
 private:
     class ListNode {
     private:
@@ -52,6 +48,35 @@ private:
     size_t _size;
 
 public:
+    class ListNodeException {
+    public:
+        ListNodeException() = delete;
+        ListNodeException(const char* message) {
+            size_t size = strlen(message);
+            _message = new char[size + 1];
+            _message[size] = '\0';
+            memcpy(_message, message, size);
+        }
+        ListNodeException(const ListNodeException& error) {
+            size_t size = strlen(error._message);
+            _message = new char[size + 1];
+            _message[size] = '\0';
+            memcpy(_message, error._message, size);
+        }
+        ListNodeException(ListNodeException&& error) {
+            _message = error._message;
+            error._message = NULL;
+        }
+        ~ListNodeException() {
+            if (_message) {
+                delete[] _message;
+                _message = NULL;
+            }
+        }
+        const char* what() { return _message; }
+    private:
+        char* _message = NULL;
+    };
     LinkedList() : _head(nullptr), _tail(nullptr), _size(0) {}
     LinkedList(const LinkedList<T>& list) : _head(nullptr), _tail(nullptr), _size(0) {
         for (size_t i = 0; i < list.size(); i++) {
@@ -104,8 +129,9 @@ public:
             if (index == 0) _head = newElement;
             if (index == _size - 1) _tail = newElement->_next;
             ++_size;
-        } else
-            throw std::out_of_range("LinkedList :: add(index, value)");
+        } else {
+            throw ListNodeException("LinkedList :: add(index, value)");
+        }
     }
     T remove(size_t index) {
         if (index >= 0 && index < _size) {
@@ -120,8 +146,9 @@ public:
             node->_prev = nullptr;
             --_size;
             return node->_value;
-        } else
-            throw std::out_of_range("LinkedList :: remove(index)");
+        } else {
+            throw ListNodeException("LinkedList :: remove(index)");
+        }
     }
     void clear() {
         if (_size != 0) {
@@ -147,8 +174,9 @@ public:
             ListNode* node = _head;
             for (size_t i = 0; i < index; ++i) node = node->_next;
             return node->_value;
-        } else
-            throw std::out_of_range("LinkedList :: get(index)");
+        } else {
+            throw ListNodeException("LinkedList :: get(index)");
+        }
     }
     T set(size_t index, const T& value) {
         if (index >= 0 && index < _size) {
@@ -157,8 +185,9 @@ public:
             T tmp = node->_value;
             node->_value = value;
             return tmp;
-        } else
-            throw std::out_of_range("LinkedList :: set(index, value)");
+        } else {
+            throw ListNodeException("LinkedList :: set(index, value)");
+        }
     }
     bool swap(size_t index1, size_t index2) {
         if (index1 >= 0 && index1 < _size && index2 >= 0 && index2 < _size) {
@@ -185,8 +214,9 @@ public:
             ListNode* node = _head;
             for (size_t i = 0; i < index; ++i) node = node->_next;
             return node->_value;
-        } else
-            throw std::out_of_range("LinkedList :: operator [index]");
+        } else {
+            throw ListNodeException("LinkedList :: operator [index]");
+        }
     }
 };
 
@@ -233,6 +263,13 @@ struct FONT_PORT SystemFontInfo {
 template class FONT_PORT LinkedList<SystemFontInfo>;
 FONT_PORT LinkedList<SystemFontInfo>& GetSystemFonts(bool refresh = false);
 
+struct FONT_PORT FontInfo {
+    String name;
+    int size;
+    bool bold;
+    bool italic;
+};
+
 enum class FONT_PORT GlyphErrorCode {
     Success = 0,
     InvalidGlyph,
@@ -250,12 +287,14 @@ struct FONT_PORT GlyphBitmapInfo {
     bool emoji = false;
 };
 
-FONT_PORT void* CreateTTFFont(const String& name, uint32_t size);
-FONT_PORT void DestroyTTFFont(void* font);
+FONT_PORT FontInfo* CreateFont(const String& name, uint32_t size);
+FONT_PORT void DestroyFont(FontInfo* font);
 FONT_PORT String LoadTTFFont(void* ttf_data, uint32_t size);
 
-FONT_PORT GlyphBitmapInfo GetDefaultGlyph();
-
 template class FONT_PORT LinkedList<GlyphBitmapInfo>;
-FONT_PORT LinkedList<GlyphBitmapInfo> GetGlyphBitmapInfo(void* font, uint32_t char_code);
+
+FONT_PORT LinkedList<GlyphBitmapInfo> GetGlyphBitmapInfoFreetype(FontInfo* font, uint32_t char_code);
+FONT_PORT LinkedList<GlyphBitmapInfo> GetGlyphBitmapInfoSystem(FontInfo* font, uint32_t char_code, bool enbaleRemap, bool enableFallback);
+FONT_PORT LinkedList<GlyphBitmapInfo> GetGlyphBitmapInfo(FontInfo* font, uint32_t char_code);
+
 }  // namespace Font

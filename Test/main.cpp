@@ -11,12 +11,12 @@ extern "C" const size_t PacificoTTF_len;
 int main(int argc, char* argv[]) {
     auto fonts = Font::GetSystemFonts();
     std::string fontName = Font::LoadTTFFont((void*)PacificoTTF, static_cast<uint32_t>(PacificoTTF_len)).data();
-    auto font = Font::CreateTTFFont(fontName.c_str(), 512);
-    auto glyphs = Font::GetGlyphBitmapInfo(font, 0x27295);
+    auto font = Font::CreateFont(fontName.c_str(), 512);
+    auto glyphs = Font::GetGlyphBitmapInfo(font, 0x27296);  // 40481 25105 32 65
 
     int texWidth, texHeight;
     unsigned char* frame;
-    if (glyphs.size() != 0) {
+    if (glyphs.size() != 0 && glyphs[0].error_code != Font::GlyphErrorCode::NoBitmapData) {
         texWidth = glyphs[0].width;
         texHeight = glyphs[0].height;
         frame = new unsigned char[texWidth * texHeight * 4];
@@ -95,8 +95,8 @@ int main(int argc, char* argv[]) {
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);  // all upcoming GL_TEXTURE_2D operations now have effect on this texture object
     // set the texture wrapping parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);  // set texture wrapping to GL_REPEAT (default wrapping method)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);  // set texture wrapping to GL_REPEAT (default wrapping method)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     // set texture filtering parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -134,8 +134,8 @@ uniform sampler2D texture1;\n\
 void main()\n\
 {\n\
 	vec4 color = texture(texture1, TexCoord);\n\
-	FragColor = vec4(vec3(1.0) - color.rgb, color.a);\n\
-	if (FragColor.a == 0.0f) discard;\n\
+	if (color.a == 0.0f) discard;\n\
+	FragColor = color;\n\
 }";
     const char* vShaderCode = vs.c_str();
     const char* fShaderCode = fs.c_str();

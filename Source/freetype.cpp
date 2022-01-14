@@ -83,7 +83,7 @@ std::shared_ptr<GlyphBitmapInfo> FreetypeFontFaceInfo::GetGlyphBitmapInfo(uint32
         return nullptr;
     }
     std::shared_ptr<GlyphBitmapInfo> glyph_result = std::make_shared<GlyphBitmapInfo>();
-    glyph_result->error_code = GlyphErrorCode::Success;
+    glyph_result->error_code = (face->glyph->bitmap.width && face->glyph->bitmap.rows) ? GlyphErrorCode::Success : GlyphErrorCode::NoBitmapData;
     glyph_result->width = face->glyph->bitmap.width;
     glyph_result->height = face->glyph->bitmap.rows;
     glyph_result->bearing_x = face->glyph->bitmap_left;
@@ -150,7 +150,7 @@ FreetypeFontFace ::~FreetypeFontFace() {
     }
 }
 
-void* FreetypeFont::Create(const std::string& name, uint32_t size) {
+FontInfo* FreetypeFont::Create(const std::string& name, uint32_t size) {
     std::string name_ = trim_copy(name);
     if (name_ == "") {
         name_ = "Arial";
@@ -189,8 +189,8 @@ void* FreetypeFont::Create(const std::string& name, uint32_t size) {
     std::copy(nameTokens.begin(), nameTokens.end(), std::ostream_iterator<std::string>(imploded, " "));
     name_ = trim_copy(imploded.str());
 
-    FTTFontInfo* ret = new FTTFontInfo;
-    ret->name = name_;
+    FontInfo* ret = new FontInfo;
+    ret->name = name_.data();
     ret->size = size;
     ret->bold = bold;
     ret->italic = italic;
@@ -214,10 +214,10 @@ std::string FreetypeFont::Load(void* ttf_data, uint32_t size) {
 }
 
 LinkedList<GlyphBitmapInfo> FreetypeFont::GetGlyphBitmap(void* font, uint32_t char_code) {
-    FTTFontInfo* info = (FTTFontInfo*)font;
+    FontInfo* info = (FontInfo*)font;
     LinkedList<GlyphBitmapInfo> result;
-    if (font_info_.find(info->name) != font_info_.end()) {
-        for (auto& famliy : font_info_.find(info->name)->second) {
+    if (font_info_.find(std::string(info->name.data())) != font_info_.end()) {
+        for (auto& famliy : font_info_.find(std::string(info->name.data()))->second) {
             for (auto face : famliy->faces) {
                 if (info->bold && !(face->face->style_flags & FT_STYLE_FLAG_BOLD)) {
                     continue;
@@ -233,7 +233,7 @@ LinkedList<GlyphBitmapInfo> FreetypeFont::GetGlyphBitmap(void* font, uint32_t ch
             }
         }
         if (info->bold || info->italic) {
-            for (auto& famliy : font_info_.find(info->name)->second) {
+            for (auto& famliy : font_info_.find(std::string(info->name.data()))->second) {
                 for (auto face : famliy->faces) {
                     auto r = face->GetGlyphBitmapInfo(char_code, info->size);
                     if (r) {
@@ -247,7 +247,7 @@ LinkedList<GlyphBitmapInfo> FreetypeFont::GetGlyphBitmap(void* font, uint32_t ch
     return result;
 }
 
-void FreetypeFont::Destroy(void* font) { delete (FTTFontInfo*)(font); }
+void FreetypeFont::Destroy(FontInfo* font) { delete font; }
 
 static FreetypeFont FreetypeFontInstance;
 

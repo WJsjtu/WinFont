@@ -13,6 +13,41 @@ jobs:
       - uses: actions/checkout@master
 
       - name: Configure CMake Shared Debug
+        run: cmake -B ${{github.workspace}}/Build/Shared/Debug -G "Visual Studio 15 2017" -A Win32 -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=DEBUG -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/Install/shared/Debug
+      - name: Build Debug
+        run: cmake --build ${{github.workspace}}/Build/Shared/Debug --config DEBUG --target install
+      
+      - name: Configure CMake Shared MinSizeRel
+        run: cmake -B ${{github.workspace}}/Build/Shared/MinSizeRel -G "Visual Studio 15 2017" -A Win32 -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=MINSIZEREL -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/Install/shared/MinSizeRel
+      - name: Build MinSizeRel
+        run: cmake --build ${{github.workspace}}/Build/Shared/MinSizeRel --config MINSIZEREL --target install
+
+      - name: Configure CMake Static Debug
+        run: cmake -B ${{github.workspace}}/Build/Static/Debug -G "Visual Studio 15 2017" -A Win32 -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=DEBUG -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/Install/static/Debug
+      - name: Build Debug
+        run: cmake --build ${{github.workspace}}/Build/Static/Debug --config DEBUG --target install
+      
+      - name: Configure CMake Static MinSizeRel
+        run: cmake -B ${{github.workspace}}/Build/Static/MinSizeRel -G "Visual Studio 15 2017" -A Win32 -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=MINSIZEREL -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/Install/static/MinSizeRel
+      - name: Build MinSizeRel
+        run: cmake --build ${{github.workspace}}/Build/Static/MinSizeRel --config MINSIZEREL --target install
+
+      - uses: actions/upload-artifact@master
+        with:
+          name: win32
+          path: |
+            ${{github.workspace}}/Install/shared/Debug
+            ${{github.workspace}}/Install/shared/MinSizeRel
+            ${{github.workspace}}/Install/static/Debug
+            ${{github.workspace}}/Install/static/MinSizeRel
+
+  build-windows-win64-vs2017:
+    name: Win64 (Windows, VS2017)
+    runs-on: windows-2016
+    steps:
+      - uses: actions/checkout@master
+
+      - name: Configure CMake Shared Debug
         run: cmake -B ${{github.workspace}}/Build/Shared/Debug -G "Visual Studio 15 2017" -A x64 -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=DEBUG -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/Install/shared/Debug
       - name: Build Debug
         run: cmake --build ${{github.workspace}}/Build/Shared/Debug --config DEBUG --target install
@@ -34,7 +69,7 @@ jobs:
 
       - uses: actions/upload-artifact@master
         with:
-          name: win32
+          name: win64
           path: |
             ${{github.workspace}}/Install/shared/Debug
             ${{github.workspace}}/Install/shared/MinSizeRel
@@ -43,7 +78,7 @@ jobs:
 
   release:
     name: Release
-    needs: [build-windows-win32-vs2017]
+    needs: [build-windows-win32-vs2017, build-windows-win64-vs2017]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
@@ -51,7 +86,12 @@ jobs:
       - uses: actions/download-artifact@master
         with:
           name: win32
-          path: ${{github.workspace}}/release/win32
+          path: ${{github.workspace}}/release/x86
+
+      - uses: actions/download-artifact@master
+        with:
+          name: win64
+          path: ${{github.workspace}}/release/x64
 
       - name: Zip
         run: cd ${{github.workspace}}/release && zip -vr ${{github.workspace}}/release.zip ./ && cd ${{github.workspace}}

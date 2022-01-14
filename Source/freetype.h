@@ -10,13 +10,6 @@
 
 namespace Font {
 
-struct FTTFontInfo {
-    std::string name;
-    uint32_t size;
-    bool bold;
-    bool italic;
-};
-
 class FreetypeFontFaceInfo {
 public:
     FreetypeFontFaceInfo() = delete;
@@ -48,10 +41,10 @@ private:
 
 class FreetypeFont {
 public:
-    void* Create(const std::string& name, uint32_t size);
+    FontInfo* Create(const std::string& name, uint32_t size);
     std::string Load(void* ttf_data, uint32_t size);
     LinkedList<GlyphBitmapInfo> GetGlyphBitmap(void* font, uint32_t char_code);
-    void Destroy(void* font);
+    void Destroy(FontInfo* font);
 
 private:
     std::unordered_map<std::string, std::vector<std::shared_ptr<FreetypeFontFace>>> font_info_;

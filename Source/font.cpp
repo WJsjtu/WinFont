@@ -39,35 +39,37 @@ bool String::operator==(const String& str) { return m_size == str.m_size ? strnc
 const char* String::data() const { return m_data; }
 const size_t String::size() const { return m_size; }
 
-void* CreateTTFFont(const String& name, uint32_t size) { return GetFreetypeFontInstance().Create(name.data(), size); }
-void DestroyTTFFont(void* font) { GetFreetypeFontInstance().Destroy(font); }
+FontInfo* CreateFont(const String& name, uint32_t size) { return GetFreetypeFontInstance().Create(name.data(), size); }
+void DestroyFont(FontInfo* font) { GetFreetypeFontInstance().Destroy(font); }
 String LoadTTFFont(void* ttf_data, uint32_t size) {
     std::string name = GetFreetypeFontInstance().Load(ttf_data, size);
     return String(name.c_str());
 }
 
-GlyphBitmapInfo GetDefaultGlyph() {
-    GlyphBitmapInfo result{};
-    result.error_code = GlyphErrorCode::Success;
-    result.width = 4;
-    result.height = 4;
-    result.bearing_x = result.bearing_y = 0;
-    result.emoji = false;
-    result.data = malloc(4 * 4 * 4);
-    memset(result.data, 125, 4 * 4 * 4);
-    return result;
-};
-
-LinkedList<GlyphBitmapInfo> GetGlyphBitmapInfo(void* font, uint32_t char_code) {
+LinkedList<GlyphBitmapInfo> GetGlyphBitmapInfoFreetype(FontInfo* font, uint32_t char_code) {
     auto freetype = GetFreetypeFontInstance().GetGlyphBitmap(font, char_code);
     if (freetype.size()) {
         return freetype;
     }
-    auto sys = GetGlyphBitmapSystem((FTTFontInfo*)font, char_code);
+    return {};
+}
+
+LinkedList<GlyphBitmapInfo> GetGlyphBitmapInfoSystem(FontInfo* font, uint32_t char_code, bool enbaleRemap, bool enableFallback) {
+    auto sys = GetGlyphBitmapSystem(font, char_code, enbaleRemap, enableFallback);
     LinkedList<GlyphBitmapInfo> result;
     for (auto& sysr : sys) {
         result.add(sysr);
     }
     return result;
+}
+
+LinkedList<GlyphBitmapInfo> GetGlyphBitmapInfo(FontInfo* font, uint32_t char_code) {
+    auto res = GetGlyphBitmapInfoFreetype(font, char_code);
+    if (res.size()) {
+        return res;
+    }
+    FontInfo newFont = *font;
+    newFont.size = -newFont.size;
+    return GetGlyphBitmapInfoSystem(&newFont, char_code, true, true);
 }
 }  // namespace Font
